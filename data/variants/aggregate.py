@@ -9,7 +9,7 @@ def read_rows(_date: date) -> pd.DataFrame:
     df: pd.DataFrame = pd.read_csv(f'{_date.isoformat()}.csv').dropna()
     banned_states = ['Total']
     df = df[~df.State.isin(banned_states)]
-    df['State'].replace('District of Columbia', 'DC')
+    df['State'] = df['State'].replace('District of Columbia', 'DC')
     cols = df.columns.values.tolist()
     if 'Rate' in cols:
         return df.rename(columns={'State': 'state', 'Rate': 'cases'})[['state', 'cases']]
