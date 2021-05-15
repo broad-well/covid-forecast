@@ -14,3 +14,5 @@ data.ages <- read_csv('https://www2.census.gov/programs-surveys/popest/tables/20
   summarize(size = sum(POPEST2019_CIV)) %>%
   mutate(state = if (NAME == 'District of Columbia') 'DC' else state.abb[match(NAME, state.name)]) %>%
   pivot_wider(names_from=age.group, values_from=size)
+
+cc.masked <- covidcast_signal('fb-survey', 'smoothed_wothers_masked', '2020-11-24', '2021-05-10', 'state')

@@ -72,8 +72,8 @@ plot.eff.states <- function (states) {
     net.table <- net.table %>% rbind(df)
   }
   ggplot(net.table, aes(x=date)) +
-    geom_line(aes(y=people_fully_vaccinated / pop.est[state])) +
-    geom_line(aes(y=ci / pop.est[state]), color = 'gray40') +
+    geom_line(aes(y=people_fully_vaccinated / pop.est[state]), size=2) +
+    geom_line(aes(y=ci / pop.est[state]), color = 'gray40', size=2) +
     facet_wrap(vars(state))
 }
 

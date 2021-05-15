@@ -75,7 +75,7 @@ initial_params = list(
   # age distribution
   # https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7589278/
   IQ = discretify(function(x)
-    dweibull(x, shape = 0.9, scale = 5.657)),
+    dweibull(x, shape = 0.75, scale = 5.657)), # (previously shape = 0.9)
   
   # Fixed delay of 9-12 days derived from SE
   # Multiply by proportion recovering independently (~99% of not hospitalized)
@@ -118,13 +118,17 @@ search.deconvolve <- function(AB, AC, BC.pdf, BC.pdf.params, errfn = function(a,
 }
 
 # parameters
-prop.exposed.hosp <- 0.03
-prop.hosp.die <- 0.11
+# compendium value is 2 to 4%
+prop.exposed.hosp <- 0.007
+# https://jamanetwork.com/journals/jamanetworkopen/fullarticle/2773971
+# https://jamanetwork.com/journals/jamanetworkopen/fullarticle/2769387/
+prop.hosp.die <- 0.08
 # https://www.cdc.gov/nchs/covid19/mortality-overview.htm
 # 65.3% of all deaths hospitalized
 prop.die.hosp <- 0.653
 prop.exposed.die <- prop.exposed.hosp * prop.hosp.die / prop.die.hosp
 prop.nonhosp.die <- prop.exposed.die * (1 - prop.die.hosp)
+prop.exposed.detected <- 0.4
 
 # state-specific IFR from age distribution
 # https://www.cdc.gov/coronavirus/2019-ncov/hcp/planning-scenarios.html
@@ -137,7 +141,7 @@ prop.exposed.die.states <- data.ages %>% ungroup %>%
          # ifr = (prop.1 * 14 / 1000000 +
          #          prop.2 * 350 / 1000000 +
          #          prop.3 * 2500 / 1000000 +
-         #          prop.4 * 40000 / 1000000) * 0.9)
+         #          prop.4 * 40000 / 1000000))
          ifr = (prop.1 * 20 / 1000000 +
            prop.2 * 500 / 1000000 +
            prop.3 * 6000 / 1000000 +
@@ -146,7 +150,11 @@ prop.exposed.die.states <- data.ages %>% ungroup %>%
 state.props <- function(abbr) {
   # TODO apply age distribution
   props <- initial_params
-  props$ifr <- filter(prop.exposed.die.states, state == abbr)$ifr / 2
+  props$ifr <- filter(prop.exposed.die.states, state == abbr)$ifr
+  # Hospitalized death rate
+  props$hdr <- prop.hosp.die
+  # Nonhospitalized death rate
+  props$ndr <- (props$ifr - prop.exposed.hosp * prop.hosp.die) / 2
   props$total <- filter(prop.exposed.die.states, state == abbr)$total
   props
 }
@@ -181,18 +189,19 @@ run.simulation <- function(params, queues, compartments, Rt, Vt, start.date) {
   for (i in 1:length(Rt)) {
     Ri <- Rt[i]
     V <- Vt[i]
+    IPCi <- params$ipc[i]
     # Step: Generate deltas
     # Special case for QR.SE: QR.SE is Q.SE - Q.EQ - Q.EH - Q.ER
-    dSE <- convolve.ts(Q.SE * 0.75, params$SE) * Ri * S / params$total
-    dER <- convolve.ts(Q.SE, params$ER) * (1 - prop.exposed.hosp) * (1 - prop.nonhosp.die)
-    dEQ <- convolve.ts(Q.SE, params$EQ) * (1 - prop.exposed.hosp)
+    dSE <- convolve.ts(Q.SE * 0.75, params$SE) * Ri * max(0, S) / params$total
+    dER <- convolve.ts(Q.SE, params$ER) * (1 - prop.exposed.hosp) * (1 - params$ndr)
+    dEQ <- convolve.ts(Q.SE, params$EQ) * (1 - prop.exposed.hosp) / IPCi
     dEH <- convolve.ts(Q.SE, params$EH) * prop.exposed.hosp
     # https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7920817/
     # https://www.medrxiv.org/content/10.1101/2021.04.21.21255473v1.full-text
     dHR <- convolve.ts(Q.EH, params$HR) * (1 - prop.hosp.die)
     dHD <- convolve.ts(Q.EH, params$HD) * prop.hosp.die
-    dQD <- convolve.ts(Q.EQ, params$QD) * prop.nonhosp.die
-    dSR <- V
+    dQD <- convolve.ts(Q.EQ, params$QD) * params$ndr * IPCi
+    dSR <- if (is.na(V)) 0 else V
     # Step: Apply deltas
     Q.SE <- append(Q.SE, dSE)
     #QR.SE <- append(QR.SE, dSE - dEQ - dEH) # rethink this
@@ -202,7 +211,7 @@ run.simulation <- function(params, queues, compartments, Rt, Vt, start.date) {
     Q.HR <- append(Q.HR, dHR)
     Q.HD <- append(Q.HD, dHD)
     Q.QD <- append(Q.QD, dQD)
-    S <- S - dSE - dSR
+    S <- max(0, S - dSE - dSR)
     E <- E - dER - dEH + dSE
     Q <- Q - dQD + dEQ
     R <- R + dER + dHR + dSR
@@ -225,6 +234,7 @@ run.simulation <- function(params, queues, compartments, Rt, Vt, start.date) {
 }
 
 library(lubridate)
+library(memoise)
 
 # We prime before vaccinations???
 prime.simulation <- function(state_a, indicators, start.date) {
@@ -234,7 +244,7 @@ prime.simulation <- function(state_a, indicators, start.date) {
     mutate(cases.smooth = rollmean(cases, k=7, na.pad=TRUE),
            hosp.smooth = rollmean(hosp, k=7, na.pad=TRUE),
            deaths.smooth = rollmean(deaths, k=7, na.pad=TRUE))
-  
+  ind.all <- indicators %>% filter(state == state_a, date >= end.date)
   ind <- indicators %>% filter(state == state_a, date >= start.date, date <= end.date)
   # Find start H/D, end H/D, then fit shape of curve to get dEH - dHD - dHR
   # and dHD + dQD
@@ -246,25 +256,24 @@ prime.simulation <- function(state_a, indicators, start.date) {
   dQD <- (1 - prop.die.hosp) * dD
   dHR <- dH * (1 - prop.hosp.die) / 10 # Rough estimate as sum(params$HR[1:10]) ~ 0.54
   dEH <- dH + dHD + dHR
-  # Median of 9 days EH; SE leads k*EH by 9 days
-  # Flow & conservation breakdown: dEH / prop.exposed.hosp = lead(dSE, 9)
+  # Median of 18 days ED; SE leads k*ED by 18 days
+  # Flow & conservation breakdown: dED / prop.exposed.die = lead(dSE, 18)
   ind.later <- filter(indicators,
                       state == state_a,
-                      date >= start.date + days(9),
-                      date <= end.date + days(9)) %>% arrange(date)
-  dHL <- c(0, diff(ind.later$hosp.smooth))
-  dDL <- c(0, diff(ind.later$deaths.smooth))
-  dEHL <- dHL + prop.die.hosp * dDL + ind.later$hosp.smooth * (1 - prop.hosp.die) / 15
-  plot(dEHL)
-  dSE <- dEHL / prop.exposed.hosp
+                      date >= start.date + days(18),
+                      date <= end.date + days(18)) %>% arrange(date)
+  # dHL <- c(0, diff(ind.later$hosp.smooth))
+  dEDL <- c(0, diff(ind.later$deaths))
+  # dEHL <- dHL + prop.die.hosp * dDL + ind.later$hosp.smooth * (1 - prop.hosp.die) / 20
+  dSE <- dEDL / state.props(state_a)$ifr * 3.5 # was 4
   dER <- dEH / prop.exposed.hosp * (1 - prop.exposed.hosp)
-  dEQ <- dER # TODO maybe slightly ahead
+  dEQ <- c(0, diff(ind$cases.smooth))
   drSE <- dSE - dEQ - dEH
   props <- state.props(state_a)
   last.day <- ind[nrow(ind),]
   # infections per case
-  props$ipc <- last.day$deaths / last.day$cases / props$ifr
-  props$rSE <- pmax(props$SE - pmax(initial_params$EQ[1:20] / props$ipc, initial_params$ER), 0)
+  props$ipc <- ind.all$deaths / ind.all$cases / props$ifr
+  # props$rSE <- pmax(props$SE - pmax(initial_params$EQ[1:20] / props$ipc, initial_params$ER), 0)
   
   list(
     queues = list(
@@ -276,18 +285,19 @@ prime.simulation <- function(state_a, indicators, start.date) {
       Q.HR = dHR,
       Q.QD = dQD),
     compartments = list(
-      S = props$total - last.day$deaths.smooth / props$ifr,
-      E = sum(drSE, na.rm=TRUE),
-      Q = last.day$cases.smooth,
-      R = last.day$deaths.smooth / props$ifr - last.day$deaths.smooth,
-      H = last.day$hosp.smooth,
-      D = last.day$deaths.smooth),
+      S = props$total - last.day$deaths / props$ifr - sum(dSE, na.rm = TRUE),
+      E = sum(dSE, na.rm=TRUE),
+      Q = last.day$cases,
+      R = last.day$deaths / props$ifr - last.day$deaths,
+      H = last.day$hosp,
+      D = last.day$deaths),
     start.date = end.date,
     params = props
   )
 }
 
-fitting.end <- as.Date('2021-03-28')
+fitting.end <- as.Date('2021-03-30')
+horizon.size <- 40 # max 45
 
 # run.simulation(pd$params, pd$Qi.SE, pd$QRi.SE, pd$Qi.EQ, pd$Qi.ER, pd$Qi.EH, pd$Qi.HR, pd$Qi.HD, pd$Qi.QD, pd$S, pd$E, pd$Q, pd$R, pd$H, pd$D, rep(1, 50), rep(0, 50), pd$start.date) -> res
 prepare.indicators.can <- function(fitting.start) {
@@ -298,74 +308,162 @@ prepare.indicators.can <- function(fitting.start) {
     state_name <- if (state_abb == 'DC') 'District of Columbia' else state.name[match(state_abb, state.abb)]
     print(state_name)
     if (state_name == 'New York') state_name <- 'New York State' # OWID oddities
-    efc <- state.eff.curve(state_name, date.min = immunization.start, date.max = fitting.end)
+    efc <- state.eff.curve(state_name, date.min = immunization.start, date.max = fitting.end + days(horizon.size))
     c(prevac.vector, efc$ci)
   }
   indicators.can %>%
-    filter(date >= fitting.start, date <= fitting.end) %>%
+    filter(date >= fitting.start, date <= fitting.end + days(horizon.size)) %>%
     filter((state %in% state.abb) | state == 'DC') %>%
     mutate(ci = state.ci.column(first(state)))
 }
 
+# library(optimParallel)
 fit.simulation <- function(prime, indicators, sta, start.date, Rt) {
-  horizon.size <- 2 # Currently monthly steps
+  step.size <- 1
+  # cluster <- makeCluster(8)
   
   # Expected in signals: cases.smooth, hosp.smooth, deaths.smooth, ci
   fit.horizon <- function(prime, signals, Rpast, date) {
-    Rt.point.slope <- function(slope) {
-      output <- rep(Rpast, horizon.size)
-      #(0:(horizon.size-1)) * slope + Rpast
-      for (order in 1:length(slope)) {
-        for (i in 1:length(output)) {
-          output[i] <- output[i] + (i-1)^order * slope[order] / factorial(order)
-        }
+    Rt.point.slope <- function(slope_a) {
+      intercept <- slope_a[1]
+      slope <- slope_a[2]
+      output <- rep(intercept, horizon.size)
+      for (i in 1:length(output)) {
+        output[i] <- output[i] + (i-1) * slope
       }
+      #(0:(horizon.size-1)) * slope + Rpast
+      # for (order in 1:(length(slope)-1)) {
+      #   for (i in 1:length(output)) {
+      #     output[i] <- output[i] + (i-1)^order * slope[order+1] / factorial(order)
+      #   }
+      # }
       output
     }
     
-    Rt.slope.error <- function(slope) {
+    Rt.slope.error <- function(slope, show = FALSE) {
       Rt <- Rt.point.slope(slope)
       res <- run.simulation(prime$params, prime$queues, prime$compartments,
                      Rt, signals$ci, date)
-      smae <- function(a, b) mean(abs(diff(tail(a, horizon.size)) - diff(tail(b, horizon.size))))
+      smae <- function(a, b) {
+        diff.mae <- mean(abs(diff(tail(a, horizon.size)) - diff(tail(b, horizon.size))))
+        abs.mae <- mean(abs(tail(a, horizon.size) - tail(b, horizon.size)))
+        diff.mae + abs.mae*3
+      }
       #plot(ggplot(tibble(a=1:(horizon.size-1),
      #                    b=tail(res$history$Q, horizon.size) %>% diff,
       #                   q=tail(signals$cases.smooth, horizon.size) %>% diff)) +
       #  geom_line(aes(a, b)) + geom_line(aes(a,q), color='red'))
       
       # if (readline('continue?') == 'no') stop()
-      cases.error <- smae(res$history$Q, signals$cases.smooth) * 0.02
-      hosp.error <- smae(res$history$H, signals$hosp.smooth) * 0.1
+      cases.error <- smae(res$history$Q, signals$cases.smooth) * 0.004
+      hosp.error <- smae(res$history$H, signals$hosp.smooth) * 0.13
       death.error <- smae(res$history$D, signals$deaths.smooth)
       # deaths roughly 0.02 of cases. hosps roughly 0.1 of cases.
-      composite.error <- hosp.error * 0.5 + death.error * 0.3 + cases.error * 0.2
-      if (is.nan(composite.error) || is.infinite(composite.error)) 1e10 else composite.error
+      if (show)
+        print(str_glue("hosp.error={hosp.error} death.error={death.error} cases.error={cases.error}"))
+      composite.error <- hosp.error + death.error + cases.error
+      if (is.nan(composite.error) || is.infinite(composite.error) || is.na(composite.error))
+        1e10 else composite.error
     }
     #sapply((20:30), Rt.slope.error)
-    optres <- optim(par=rnorm(3, sd = 0.04), Rt.slope.error,
-                    lower=c(-0.5, -0.4, -0.3), upper=c(0.5, 0.4, 0.3))
+    optres <- optim(par=c(min(max(0.1, Rpast), 12), 0), Rt.slope.error)
+                    # lower=c(0.1, 0.2), upper=c(10, 5), method = 'L-BFGS-B')
     sim <- run.simulation(prime$params, prime$queues, prime$compartments,
-                   Rt.point.slope(optres$par), signals$ci, date)
-    plot(ggplot(signals) + geom_line(aes(date, c(NA, diff(cases.smooth))), color='red') +
-           geom_line(data = sim$history, aes(date, c(NA, diff(Q)))))
+                   Rt.point.slope(optres$par), c(0, diff(signals$ci)), date)
+    
+    pstyle <- theme_bw(base_family = 'Linux Libertine O', base_size = 13)
+    pcases <- ggplot(signals) + geom_line(aes(date, cases.smooth), color='red') +
+      geom_line(data = sim$history, aes(date, Q)) +
+      ylab('Total') +
+      ggtitle('Cases') + pstyle
+    phosp <- ggplot(signals) + geom_line(aes(date, hosp), color='red') +
+      geom_line(data = sim$history, aes(date, H)) +
+      ylab('Total') +
+      ggtitle('Hospitalizations') + pstyle
+    pdeaths <- ggplot(signals) + geom_line(aes(date, deaths.smooth), color='red') +
+      geom_line(data = sim$history, aes(date, D)) +
+      ylab('Total') +
+      ggtitle('Deaths') + pstyle
+    pdcases <- ggplot(signals) + geom_line(aes(date, c(NA, diff(cases.smooth))), color='red') +
+      geom_line(data = sim$history, aes(date, diff(Q))) +
+      ylab('Daily Increase') +
+      ggtitle('Cases') + pstyle
+    pdhosp <- ggplot(signals) + geom_line(aes(date, c(NA, diff(hosp))), color='red') +
+      geom_line(data = sim$history, aes(date, diff(H))) +
+      ylab('Daily Increase') +
+      ggtitle('Hospitalizations') + pstyle
+    pddeaths <- ggplot(signals) + geom_line(aes(date, c(NA, diff(deaths.smooth))), color='red') +
+      geom_line(data = sim$history, aes(date, diff(D))) +
+      ylab('Daily Increase') +
+      ggtitle('Deaths') + pstyle
+    grid.arrange(pcases, phosp, pdeaths, nrow=3)
+    
+    print(optres$par)
+    Rt.slope.error(optres$par, show = TRUE)
     list(sim=sim, par=optres$par, Rt=Rt.point.slope(optres$par))
   }
   
   compartment.history <- tibble()
+  Rt.history <- c()
   
   while (start.date <= fitting.end) {
-    end.date <- start.date + days(horizon.size)
+    end.date <- min(max(indicators$date), start.date + days(horizon.size))
     fitting <- fit.horizon(prime, filter(indicators, state == sta,
                               date >= start.date, date <= end.date), Rt,
                            start.date)
-    compartment.history <- rbind(compartment.history, fitting$sim$history)
-    Rt <- last(fitting$Rt)
-    prime$start.date <- start.date
-    prime$compartments <- as.list(slice(fitting$sim$history, n()))
+    compartment.history <- rbind(compartment.history, fitting$sim$history %>% slice(2:(step.size+1)))
+    Rt.history <- append(Rt.history, fitting$Rt[1:step.size])
+    Rt <- fitting$Rt[step.size+1]
+    prime$start.date <- start.date + days(step.size)
+    prime$compartments <- as.list(slice(fitting$sim$history, step.size+1))
     prime$queues <- fitting$sim$queues
-    print(str_glue("Processed horizon period from {start.date} to {end.date} Rt={last(fitting$Rt)}"))
-    start.date <- end.date + days(1)
+    prime$queues <- lapply(prime$queues, function(d) {
+      length(d) <- length(d) - (horizon.size - step.size)
+      d
+    })
+    prime$params$ipc <- tail(prime$params$ipc, length(prime$params$ipc) - step.size)
+    print(str_glue("S={prime$compartments$S} Processed horizon period from {start.date} to {end.date} Rt={Rt}"))
+    start.date <- start.date + days(step.size)
   }
   
+  # stopCluster(cluster)
+  compartment.history$Rt <- Rt.history
   list(history=compartment.history, Rt=Rt, prime=prime)
+}
+
+try.model <- function(state_abb, start.date, Rt=1.0) {
+  ind.prep <- prepare.indicators.can(start.date - days(30))
+  primed <- prime.simulation(state_abb, ind.prep, start.date)
+  finfit <- fit.simulation(primed, ind.prep, state_abb, primed$start.date, Rt)
+  diagplots <- ggplot(inner_join(finfit$history, filter(ind.prep, state == state_abb), by='date'), aes(x=date)) +
+    geom_line(aes(y=cases.smooth), color='red') + geom_line(aes(y=Q))
+  plot(diagplots)
+  list(ind.prep, primed, finfit, state_abb)
+}
+
+library(gridExtra)
+plot.diagnosis <- function(model.results) {
+  global.theme <- theme_bw(base_family = 'Linux Libertine O') + theme(plot.background = element_rect('#f1f2f4'))
+  joint.table <- model.results[[3]]$history %>%
+    inner_join(filter(model.results[[1]], state == model.results[[4]]))
+    
+  plot.cases <- ggplot(joint.table) +
+    geom_line(aes(date, Q)) +
+    geom_line(aes(date, cases.smooth), color = 'red') +
+    ggtitle('Fitted Cases') + global.theme
+  
+  plot.hosp <- ggplot(joint.table) +
+    geom_line(aes(date, H)) +
+    geom_line(aes(date, hosp), color = 'red') +
+    ggtitle('Fitted Hospitalizations') + global.theme
+  
+  plot.deaths <- ggplot(joint.table) +
+    geom_line(aes(date, D)) +
+    geom_line(aes(date, deaths.smooth), color = 'red') +
+    ggtitle('Fitted Deaths') + global.theme
+  
+  plot.Rt <- ggplot(joint.table) + geom_line(aes(date, Rt)) +
+    ggtitle('Modeled Transmission Rate') + global.theme
+
+  grid.arrange(plot.cases, plot.hosp, plot.deaths, plot.Rt, nrow=2, ncol=2)
 }

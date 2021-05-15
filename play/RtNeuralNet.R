@@ -1,0 +1,1 @@
+# Covariate candidates: Climate, Mask use, Mobility (Apple/Google)
