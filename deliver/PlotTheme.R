@@ -15,6 +15,9 @@ global.theme <- theme_bw(base_family = 'Linux Libertine O', base_size = 13)
   #       axis.ticks = element_line(color = '#98daec'),
   #       panel.grid = element_line(color = colors.cyan),
   #       axis.text = element_text(color = '#347783'))
+poster.theme <- theme_bw(base_family = 'Linux Libertine O', base_size = 15) +
+  theme(plot.background = element_rect('#f1f2f4'))
+
 
 options(ggplot2.continuous.colour=colors.black)
 

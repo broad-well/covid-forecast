@@ -119,10 +119,10 @@ search.deconvolve <- function(AB, AC, BC.pdf, BC.pdf.params, errfn = function(a,
 
 # parameters
 # compendium value is 2 to 4%
-prop.exposed.hosp <- 0.007
+prop.exposed.hosp <- 0.01
 # https://jamanetwork.com/journals/jamanetworkopen/fullarticle/2773971
 # https://jamanetwork.com/journals/jamanetworkopen/fullarticle/2769387/
-prop.hosp.die <- 0.08
+prop.hosp.die <- 0.055
 # https://www.cdc.gov/nchs/covid19/mortality-overview.htm
 # 65.3% of all deaths hospitalized
 prop.die.hosp <- 0.653
@@ -154,7 +154,8 @@ state.props <- function(abbr) {
   # Hospitalized death rate
   props$hdr <- prop.hosp.die
   # Nonhospitalized death rate
-  props$ndr <- (props$ifr - prop.exposed.hosp * prop.hosp.die) / 2
+  props$ehr <- prop.exposed.hosp
+  props$ndr <- (props$ifr - prop.exposed.hosp * prop.hosp.die) / 1
   props$total <- filter(prop.exposed.die.states, state == abbr)$total
   props
 }
@@ -265,7 +266,7 @@ prime.simulation <- function(state_a, indicators, start.date) {
   # dHL <- c(0, diff(ind.later$hosp.smooth))
   dEDL <- c(0, diff(ind.later$deaths))
   # dEHL <- dHL + prop.die.hosp * dDL + ind.later$hosp.smooth * (1 - prop.hosp.die) / 20
-  dSE <- dEDL / state.props(state_a)$ifr * 3.5 # was 4
+  dSE <- dEDL / state.props(state_a)$ifr * 3 # was 4
   dER <- dEH / prop.exposed.hosp * (1 - prop.exposed.hosp)
   dEQ <- c(0, diff(ind$cases.smooth))
   drSE <- dSE - dEQ - dEH
@@ -297,7 +298,7 @@ prime.simulation <- function(state_a, indicators, start.date) {
 }
 
 fitting.end <- as.Date('2021-03-30')
-horizon.size <- 40 # max 45
+horizon.size <- 45 # max 45
 
 # run.simulation(pd$params, pd$Qi.SE, pd$QRi.SE, pd$Qi.EQ, pd$Qi.ER, pd$Qi.EH, pd$Qi.HR, pd$Qi.HD, pd$Qi.QD, pd$S, pd$E, pd$Q, pd$R, pd$H, pd$D, rep(1, 50), rep(0, 50), pd$start.date) -> res
 prepare.indicators.can <- function(fitting.start) {
@@ -371,7 +372,7 @@ fit.simulation <- function(prime, indicators, sta, start.date, Rt) {
     sim <- run.simulation(prime$params, prime$queues, prime$compartments,
                    Rt.point.slope(optres$par), c(0, diff(signals$ci)), date)
     
-    pstyle <- theme_bw(base_family = 'Linux Libertine O', base_size = 13)
+    pstyle <- theme_gray(base_family = 'Linux Libertine O', base_size = 11)
     pcases <- ggplot(signals) + geom_line(aes(date, cases.smooth), color='red') +
       geom_line(data = sim$history, aes(date, Q)) +
       ylab('Total') +
@@ -467,3 +468,39 @@ plot.diagnosis <- function(model.results) {
 
   grid.arrange(plot.cases, plot.hosp, plot.deaths, plot.Rt, nrow=2, ncol=2)
 }
+
+continue.sim <- function(fit.output, ci, Rt) {
+  run.simulation(fit.output[[2]]$params, fit.output[[2]]$queues, fit.output[[2]]$compartments,
+                        Rt, ci, max(fit.output[[3]]$history$date) + days())
+}
+
+plot.sim <- function(sim.output) {
+  plot.Q <- ggplot(sim.output$history, aes(date, Q)) + geom_line() + theme_bw()
+  plot.S <- ggplot(sim.output$history, aes(date, S)) + geom_line() + theme_bw()
+  plot.D <- ggplot(sim.output$history, aes(date, D)) + geom_line() + theme_bw()
+  plot.E <- ggplot(sim.output$history, aes(date, E)) + geom_line() + theme_bw()
+  plot.R <- ggplot(sim.output$history, aes(date, R)) + geom_line() + theme_bw()
+  plot.H <- ggplot(sim.output$history, aes(date, H)) + geom_line() + theme_bw()
+  
+  
+  grid.arrange(plot.Q, plot.S, plot.D, plot.E, plot.R, plot.H, nrow=2, ncol=3)
+}
+
+plot.sims <- function(sims, states) {
+  output <- tibble()
+  for (i in 1:length(states)) {
+    sims[[i]]$history$state <- states[i]
+    output <- rbind(output, sims[[i]]$history)
+  }
+  plot.Q <- ggplot(output, aes(date, Q, color = state)) + geom_line() + theme_bw()
+  plot.S <- ggplot(output, aes(date, S, color = state)) + geom_line() + theme_bw()
+  plot.D <- ggplot(output, aes(date, D, color = state)) + geom_line() + theme_bw()
+  plot.E <- ggplot(output, aes(date, E, color = state)) + geom_line() + theme_bw()
+  plot.R <- ggplot(output, aes(date, R, color = state)) + geom_line() + theme_bw()
+  plot.H <- ggplot(output, aes(date, H, color = state)) + geom_line() + theme_bw()
+  
+  
+  grid.arrange(plot.Q, plot.S, plot.D, plot.E, plot.R, plot.H, nrow=2, ncol=3)
+}
+
+# len.1 <- 300; plot.sims(list(continue.sim(try.ma.final, rep(1000, len.1), rep(1, len.1)), continue.sim(try.ma.final, rep(0, len.1), rep(1, len.1)), continue.sim(try.ma.final, rep(10000, len.1), rep(1, len.1))), c('1000', '0', '10000'))
