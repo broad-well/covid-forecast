@@ -52,7 +52,7 @@ data.variants.b117.region.states <- list(
 fit_growth <- function(region) {
   tib <- tibble(date = data.variants.b117.dates, prop = data.variants.b117.regions[[region]])
   prop.nls <- nls(prop ~ mx / (1 + exp(k * date + X)), data = tib, start = list(k=-0.2, X=15, mx=0.7))
-  delta_days <- (-90):180
+  delta_days <- (-90):250
   predictor <- function(d) coef(prop.nls)['mx'] / (1 + exp(coef(prop.nls)['k'] * d + coef(prop.nls)['X']))
   predicted <- sapply(delta_days, predictor)
   tibble(date = ymd('2020-12-31') + days(delta_days), prop = predicted)

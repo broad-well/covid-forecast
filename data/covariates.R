@@ -37,11 +37,13 @@ data.mobility.apple <- read_csv('data/raw/apple-mobility.csv') %>%
          state = state.abb[match(state, state.name)],
          date = ymd(date))
 
+
+library(covidcast)
 data.population.density.raw <- read_csv('https://www2.census.gov/programs-surveys/decennial/2020/data/apportionment/apportionment.csv')
 data.population.density <- data.population.density.raw %>%
   filter(`Geography Type` == 'State', Year == 2020) %>% 
   select(Name, `Resident Population Density`) %>%
-  mutate(state = state.abb[match(Name, state.name)]) %>%
+  mutate(state = name_to_abbr(Name) %>% unname) %>%
   rename(density = `Resident Population Density`)
 data.population.count <- data.population.density.raw %>%
   filter(`Geography Type` == 'State', Year == 2020) %>%
@@ -50,3 +52,5 @@ data.population.count <- data.population.density.raw %>%
   mutate(state = state.abb[match(state, state.name)])
 data.population.states <- data.population.count$pop
 names(data.population.states) <- data.population.count$state
+data.population.density.states <- data.population.density$density
+names(data.population.density.states) <- data.population.density$state
